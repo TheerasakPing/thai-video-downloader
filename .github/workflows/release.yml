@@ -118,7 +118,7 @@ jobs:
   build-macos-intel:
     name: 🍎 Build macOS (Intel)
     needs: create-release
-    runs-on: macos-13
+    runs-on: macos-latest
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v4
@@ -154,7 +154,7 @@ jobs:
   build-macos-arm:
     name: 🍎 Build macOS (Apple Silicon)
     needs: create-release
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v4
