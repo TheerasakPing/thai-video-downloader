@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::{VideoInfo, VideoSource, DownloaderError};
+use super::{VideoInfo, VideoSource, DownloaderError, sanitize_filename, validate_output_dir, validate_url};
 use super::browser::BrowserAutomation;
 use super::hls::{HlsDownloader, DirectDownloader};
 
@@ -14,8 +14,10 @@ impl VideoDownloader {
     }
 
     pub async fn get_info(&self, url: &str) -> Result<VideoInfo, DownloaderError> {
+        // Validate URL to prevent SSRF attacks
+        let validated = validate_url(url)?;
         let browser = BrowserAutomation::new(self.headless);
-        browser.get_video_info(url).await
+        browser.get_video_info(&validated).await
     }
 
     pub async fn download(
@@ -26,6 +28,9 @@ impl VideoDownloader {
         quality: Option<&str>,
         progress_callback: impl Fn(f32, String) + Send + Clone + 'static,
     ) -> Result<PathBuf, DownloaderError> {
+        // Validate and sanitize output directory
+        let validated_dir = validate_output_dir(output_dir)?;
+
         // Get video info first
         let info = self.get_info(url).await?;
 
@@ -36,9 +41,19 @@ impl VideoDownloader {
         // Select source based on quality
         let source = self.select_source(&info.sources, quality);
 
-        // Determine output path
-        let output_filename = filename.unwrap_or("video");
-        let output_path = PathBuf::from(output_dir).join(output_filename);
+        // Sanitize filename to prevent path traversal
+        let sanitized_filename = filename
+            .map(sanitize_filename)
+            .unwrap_or_else(|| "video".to_string());
+
+        // Ensure the filename is not empty after sanitization
+        let output_filename = if sanitized_filename.is_empty() || sanitized_filename == "." {
+            "video".to_string()
+        } else {
+            sanitized_filename
+        };
+
+        let output_path = PathBuf::from(&validated_dir).join(&output_filename);
 
         // Download based on source type
         if source.source_type == "hls" || source.url.contains(".m3u8") {

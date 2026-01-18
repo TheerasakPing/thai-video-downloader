@@ -17,10 +17,12 @@ import {
   Settings,
   ChevronDown,
   X,
-  ExternalLink,
   Image,
-  Clipboard,
   ClipboardCheck,
+  Pause,
+  List,
+  ChevronUp,
+  RotateCcw,
 } from "lucide-react";
 
 // Supported site patterns for URL validation
@@ -122,7 +124,46 @@ interface LogEntry {
   timestamp: Date;
 }
 
-type TabType = "download" | "history";
+// Queue types
+interface QueueItem {
+  id: string;
+  url: string;
+  title: string;
+  thumbnail: string;
+  quality: string;
+  output_dir: string;
+  output_filename: string;
+  status: "Pending" | "Downloading" | "Paused" | "Completed" | "Failed" | "Cancelled";
+  progress: number;
+  speed: string;
+  eta: string;
+  error: string | null;
+  file_path: string | null;
+  added_at: string;
+}
+
+interface QueueProgress {
+  id: string;
+  status: "Pending" | "Downloading" | "Paused" | "Completed" | "Failed" | "Cancelled";
+  progress: number;
+  speed: string;
+  eta: string;
+  message: string;
+  file_path: string | null;
+}
+
+// Settings types
+interface AppSettings {
+  default_download_dir: string;
+  default_quality: string;
+  max_concurrent_downloads: number;
+  auto_start_queue: boolean;
+  show_notifications: boolean;
+  minimize_to_tray: boolean;
+  theme: string;
+}
+
+type TabType = "download" | "queue" | "history" | "settings";
 
 function App() {
   const [activeTab, setActiveTab] = useState<TabType>("download");
@@ -138,9 +179,24 @@ function App() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
+
+  // Queue state
+  const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [isProcessingQueue, setIsProcessingQueue] = useState(false);
+
+  // Settings state
+  const [settings, setSettings] = useState<AppSettings>({
+    default_download_dir: "",
+    default_quality: "auto",
+    max_concurrent_downloads: 2,
+    auto_start_queue: true,
+    show_notifications: true,
+    minimize_to_tray: false,
+    theme: "dark",
+  });
   const [showQualityDropdown, setShowQualityDropdown] = useState(false);
   const [clipboardDetected, setClipboardDetected] = useState(false);
-  const [urlSource, setUrlSource] = useState<"manual" | "clipboard" | null>(null);
+  const [, setUrlSource] = useState<"manual" | "clipboard" | null>(null);
 
   // Speed & ETA tracking
   const [downloadSpeed, setDownloadSpeed] = useState(0); // bytes per second
@@ -254,6 +310,31 @@ function App() {
   useEffect(() => {
     invoke<string>("get_download_dir").then(setOutputDir).catch(console.error);
     loadHistory();
+    loadSettings();
+    loadQueue();
+
+    // Listen for queue progress updates
+    const unlistenQueue = listen<QueueProgress>("queue-progress", (event) => {
+      const data = event.payload;
+      setQueue(prev => prev.map(item =>
+        item.id === data.id
+          ? {
+              ...item,
+              status: data.status,
+              progress: data.progress,
+              speed: data.speed,
+              eta: data.eta,
+              file_path: data.file_path || item.file_path,
+            }
+          : item
+      ));
+
+      // Show notification on completion
+      if (data.status === "Completed") {
+        showNotification("Download Complete", data.message);
+        loadHistory();
+      }
+    });
 
     const unlisten = listen<DownloadProgress>("download-progress", (event) => {
       const data = event.payload;
@@ -333,12 +414,172 @@ function App() {
 
     return () => {
       unlisten.then((fn) => fn());
+      unlistenQueue.then((fn) => fn());
     };
   }, []);
 
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
+
+  // Load settings from backend
+  const loadSettings = async () => {
+    try {
+      const savedSettings = await invoke<AppSettings>("get_settings");
+      setSettings(savedSettings);
+      if (savedSettings.default_download_dir) {
+        setOutputDir(savedSettings.default_download_dir);
+      }
+    } catch (error) {
+      console.error("Failed to load settings:", error);
+    }
+  };
+
+  // Save settings to backend
+  const saveSettings = async (newSettings: AppSettings) => {
+    try {
+      await invoke("save_settings", { settings: newSettings });
+      setSettings(newSettings);
+      addLog("success", "Settings saved");
+    } catch (error) {
+      addLog("error", `Failed to save settings: ${error}`);
+    }
+  };
+
+  // Load queue from backend
+  const loadQueue = async () => {
+    try {
+      const items = await invoke<QueueItem[]>("queue_get_items");
+      setQueue(items);
+    } catch (error) {
+      console.error("Failed to load queue:", error);
+    }
+  };
+
+  // Queue management functions
+  const addToQueue = async () => {
+    if (!videoInfo) {
+      addLog("error", "Please fetch video info first");
+      return;
+    }
+
+    try {
+      await invoke<string>("queue_add", {
+        url: url.trim(),
+        title: videoInfo.title || "Unknown",
+        thumbnail: videoInfo.thumbnail || "",
+        quality: quality,
+        outputDir: outputDir,
+        outputFilename: filename || videoInfo.title?.replace(/[<>:"/\\|?*]/g, "_") + ".mp4" || "video.mp4",
+      });
+
+      addLog("success", `Added to queue: ${videoInfo.title}`);
+      loadQueue();
+
+      // Clear form
+      setUrl("");
+      setVideoInfo(null);
+      setFilename("");
+
+      // Auto-start if enabled
+      if (settings.auto_start_queue) {
+        processQueue();
+      }
+    } catch (error) {
+      addLog("error", `Failed to add to queue: ${error}`);
+    }
+  };
+
+  const removeFromQueue = async (id: string) => {
+    try {
+      await invoke("queue_remove", { id });
+      loadQueue();
+    } catch (error) {
+      addLog("error", `Failed to remove from queue: ${error}`);
+    }
+  };
+
+  const pauseQueueItem = async (id: string) => {
+    try {
+      await invoke("queue_pause", { id });
+      loadQueue();
+    } catch (error) {
+      addLog("error", `Failed to pause: ${error}`);
+    }
+  };
+
+  const resumeQueueItem = async (id: string) => {
+    try {
+      await invoke("queue_resume", { id });
+      loadQueue();
+      // Restart processing
+      processQueue();
+    } catch (error) {
+      addLog("error", `Failed to resume: ${error}`);
+    }
+  };
+
+  const cancelQueueItem = async (id: string) => {
+    try {
+      await invoke("queue_cancel", { id });
+      loadQueue();
+    } catch (error) {
+      addLog("error", `Failed to cancel: ${error}`);
+    }
+  };
+
+  const clearCompletedQueue = async () => {
+    try {
+      await invoke("queue_clear_completed");
+      loadQueue();
+    } catch (error) {
+      addLog("error", `Failed to clear completed: ${error}`);
+    }
+  };
+
+  const moveQueueItem = async (id: string, direction: number) => {
+    try {
+      await invoke("queue_move_item", { id, direction });
+      loadQueue();
+    } catch (error) {
+      console.error("Failed to move item:", error);
+    }
+  };
+
+  const processQueue = async () => {
+    if (isProcessingQueue) return;
+
+    setIsProcessingQueue(true);
+
+    try {
+      // Find pending items
+      const pendingItems = queue.filter(item => item.status === "Pending");
+      const activeCount = queue.filter(item => item.status === "Downloading").length;
+      const availableSlots = settings.max_concurrent_downloads - activeCount;
+
+      // Start downloads for available slots
+      for (let i = 0; i < Math.min(pendingItems.length, availableSlots); i++) {
+        const item = pendingItems[i];
+        await invoke("queue_start_download", { id: item.id });
+      }
+
+      loadQueue();
+    } catch (error) {
+      addLog("error", `Queue processing error: ${error}`);
+    } finally {
+      setIsProcessingQueue(false);
+    }
+  };
+
+  // Auto-process queue when items are added or status changes
+  useEffect(() => {
+    const pendingCount = queue.filter(item => item.status === "Pending").length;
+    const activeCount = queue.filter(item => item.status === "Downloading").length;
+
+    if (pendingCount > 0 && activeCount < settings.max_concurrent_downloads && settings.auto_start_queue) {
+      processQueue();
+    }
+  }, [queue, settings.max_concurrent_downloads, settings.auto_start_queue]);
 
   const loadHistory = async () => {
     try {
@@ -567,12 +808,29 @@ function App() {
           Download
         </button>
         <button
+          className={`tab-btn ${activeTab === "queue" ? "active" : ""}`}
+          onClick={() => setActiveTab("queue")}
+        >
+          <List size={18} />
+          Queue
+          {queue.filter(i => i.status === "Pending" || i.status === "Downloading").length > 0 && (
+            <span className="badge">{queue.filter(i => i.status === "Pending" || i.status === "Downloading").length}</span>
+          )}
+        </button>
+        <button
           className={`tab-btn ${activeTab === "history" ? "active" : ""}`}
           onClick={() => setActiveTab("history")}
         >
           <History size={18} />
           History
           {history.length > 0 && <span className="badge">{history.length}</span>}
+        </button>
+        <button
+          className={`tab-btn ${activeTab === "settings" ? "active" : ""}`}
+          onClick={() => setActiveTab("settings")}
+        >
+          <Settings size={18} />
+          Settings
         </button>
       </div>
 
@@ -760,6 +1018,17 @@ function App() {
                   </>
                 )}
               </button>
+
+              {/* Add to Queue Button */}
+              {videoInfo && !isDownloading && (
+                <button
+                  className="queue-btn"
+                  onClick={addToQueue}
+                >
+                  <List size={20} />
+                  Add to Queue
+                </button>
+              )}
             </section>
 
             {/* Progress Section */}
@@ -908,6 +1177,271 @@ function App() {
                 ))}
               </div>
             )}
+          </section>
+        )}
+
+        {/* Queue Tab */}
+        {activeTab === "queue" && (
+          <section className="queue-section">
+            <div className="queue-header">
+              <h3>
+                <List size={20} />
+                Download Queue
+              </h3>
+              <div className="queue-actions">
+                {queue.some(i => i.status === "Completed" || i.status === "Failed") && (
+                  <button className="clear-btn" onClick={clearCompletedQueue}>
+                    <Trash2 size={14} />
+                    Clear Completed
+                  </button>
+                )}
+                {queue.some(i => i.status === "Pending") && (
+                  <button className="start-btn" onClick={processQueue} disabled={isProcessingQueue}>
+                    <Play size={14} />
+                    Start Queue
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {queue.length === 0 ? (
+              <div className="queue-empty">
+                <List size={48} />
+                <p>Queue is empty</p>
+                <span>Add videos from the Download tab to start a queue</span>
+              </div>
+            ) : (
+              <div className="queue-list">
+                {queue.map((item, index) => (
+                  <div key={item.id} className={`queue-item status-${item.status.toLowerCase()}`}>
+                    <div className="queue-thumbnail">
+                      {item.thumbnail ? (
+                        <img src={item.thumbnail} alt={item.title} />
+                      ) : (
+                        <div className="no-thumbnail">
+                          <Film size={24} />
+                        </div>
+                      )}
+                      {item.status === "Downloading" && (
+                        <div className="thumbnail-overlay">
+                          <Loader2 className="animate-spin" size={20} />
+                        </div>
+                      )}
+                    </div>
+                    <div className="queue-info">
+                      <h4>{item.title}</h4>
+                      <div className="queue-meta">
+                        <span className={`status-badge ${item.status.toLowerCase()}`}>
+                          {item.status === "Downloading" && <Loader2 className="animate-spin" size={12} />}
+                          {item.status === "Completed" && <CheckCircle size={12} />}
+                          {item.status === "Failed" && <XCircle size={12} />}
+                          {item.status === "Paused" && <Pause size={12} />}
+                          {item.status}
+                        </span>
+                        <span className="quality-badge">{item.quality}</span>
+                        {item.speed && <span className="speed">{item.speed}</span>}
+                        {item.eta && <span className="eta">{item.eta}</span>}
+                      </div>
+                      {(item.status === "Downloading" || item.status === "Paused") && (
+                        <div className="queue-progress">
+                          <div className="progress-bar-container">
+                            <div className="progress-bar" style={{ width: `${item.progress}%` }} />
+                          </div>
+                          <span className="progress-text">{item.progress.toFixed(1)}%</span>
+                        </div>
+                      )}
+                      {item.error && (
+                        <p className="error-text">{item.error}</p>
+                      )}
+                    </div>
+                    <div className="queue-item-actions">
+                      {/* Move buttons */}
+                      {item.status === "Pending" && (
+                        <>
+                          <button
+                            className="action-btn"
+                            onClick={() => moveQueueItem(item.id, -1)}
+                            disabled={index === 0}
+                            title="Move up"
+                          >
+                            <ChevronUp size={16} />
+                          </button>
+                          <button
+                            className="action-btn"
+                            onClick={() => moveQueueItem(item.id, 1)}
+                            disabled={index === queue.length - 1}
+                            title="Move down"
+                          >
+                            <ChevronDown size={16} />
+                          </button>
+                        </>
+                      )}
+                      {/* Pause/Resume */}
+                      {item.status === "Downloading" && (
+                        <button
+                          className="action-btn pause"
+                          onClick={() => pauseQueueItem(item.id)}
+                          title="Pause"
+                        >
+                          <Pause size={16} />
+                        </button>
+                      )}
+                      {item.status === "Paused" && (
+                        <button
+                          className="action-btn play"
+                          onClick={() => resumeQueueItem(item.id)}
+                          title="Resume"
+                        >
+                          <Play size={16} />
+                        </button>
+                      )}
+                      {/* Retry */}
+                      {item.status === "Failed" && (
+                        <button
+                          className="action-btn retry"
+                          onClick={() => resumeQueueItem(item.id)}
+                          title="Retry"
+                        >
+                          <RotateCcw size={16} />
+                        </button>
+                      )}
+                      {/* Open file */}
+                      {item.status === "Completed" && item.file_path && (
+                        <button
+                          className="action-btn play"
+                          onClick={() => handleOpenFile(item.file_path!)}
+                          title="Play"
+                        >
+                          <Play size={16} />
+                        </button>
+                      )}
+                      {/* Cancel/Remove */}
+                      {(item.status === "Pending" || item.status === "Paused") && (
+                        <button
+                          className="action-btn delete"
+                          onClick={() => cancelQueueItem(item.id)}
+                          title="Cancel"
+                        >
+                          <X size={16} />
+                        </button>
+                      )}
+                      {(item.status === "Completed" || item.status === "Failed" || item.status === "Cancelled") && (
+                        <button
+                          className="action-btn delete"
+                          onClick={() => removeFromQueue(item.id)}
+                          title="Remove"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* Settings Tab */}
+        {activeTab === "settings" && (
+          <section className="settings-section">
+            <div className="settings-header">
+              <h3>
+                <Settings size={20} />
+                Settings
+              </h3>
+            </div>
+
+            <div className="settings-content">
+              <div className="settings-group">
+                <h4>Download Settings</h4>
+
+                <div className="setting-item">
+                  <label>Default Download Folder</label>
+                  <div className="input-wrapper">
+                    <input
+                      type="text"
+                      value={settings.default_download_dir}
+                      onChange={(e) => setSettings({ ...settings, default_download_dir: e.target.value })}
+                      placeholder="Select folder..."
+                    />
+                    <button onClick={async () => {
+                      const selected = await open({ directory: true, multiple: false });
+                      if (selected) {
+                        setSettings({ ...settings, default_download_dir: selected as string });
+                      }
+                    }}>
+                      <FolderOpen size={18} />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="setting-item">
+                  <label>Default Quality</label>
+                  <select
+                    value={settings.default_quality}
+                    onChange={(e) => setSettings({ ...settings, default_quality: e.target.value })}
+                  >
+                    <option value="auto">Auto (Best)</option>
+                    <option value="1080p">1080p</option>
+                    <option value="720p">720p</option>
+                    <option value="480p">480p</option>
+                    <option value="360p">360p</option>
+                  </select>
+                </div>
+
+                <div className="setting-item">
+                  <label>Max Concurrent Downloads</label>
+                  <select
+                    value={settings.max_concurrent_downloads}
+                    onChange={(e) => setSettings({ ...settings, max_concurrent_downloads: parseInt(e.target.value) })}
+                  >
+                    <option value={1}>1</option>
+                    <option value={2}>2</option>
+                    <option value={3}>3</option>
+                    <option value={4}>4</option>
+                    <option value={5}>5</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="settings-group">
+                <h4>Queue Settings</h4>
+
+                <div className="setting-item checkbox">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={settings.auto_start_queue}
+                      onChange={(e) => setSettings({ ...settings, auto_start_queue: e.target.checked })}
+                    />
+                    Auto-start queue when items are added
+                  </label>
+                </div>
+              </div>
+
+              <div className="settings-group">
+                <h4>Notifications</h4>
+
+                <div className="setting-item checkbox">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={settings.show_notifications}
+                      onChange={(e) => setSettings({ ...settings, show_notifications: e.target.checked })}
+                    />
+                    Show desktop notifications
+                  </label>
+                </div>
+              </div>
+
+              <div className="settings-actions">
+                <button className="save-btn" onClick={() => saveSettings(settings)}>
+                  <CheckCircle size={18} />
+                  Save Settings
+                </button>
+              </div>
+            </div>
           </section>
         )}
       </main>

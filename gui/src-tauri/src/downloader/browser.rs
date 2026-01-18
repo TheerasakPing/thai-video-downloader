@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use super::{extract_quality_from_url, is_ad_url, VideoInfo, VideoSource, DownloaderError};
+use super::{extract_quality_from_url, is_ad_url, validate_url, VideoInfo, VideoSource, DownloaderError};
 
 pub struct BrowserAutomation {
     headless: bool,
@@ -18,6 +18,9 @@ impl BrowserAutomation {
     }
 
     pub async fn get_video_info(&self, url: &str) -> Result<VideoInfo, DownloaderError> {
+        // Validate URL to prevent SSRF attacks
+        let validated = validate_url(url)?;
+
         let mut builder = BrowserConfig::builder();
 
         if !self.headless {
@@ -36,7 +39,7 @@ impl BrowserAutomation {
             while let Some(_) = handler.next().await {}
         });
 
-        let result = self.extract_info(&browser, url).await;
+        let result = self.extract_info(&browser, &validated).await;
 
         browser.close().await.ok();
         handler_task.abort();
