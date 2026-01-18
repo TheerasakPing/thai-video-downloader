@@ -1,0 +1,254 @@
+name: 🚀 Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # 🔍 Create Release Draft
+  create-release:
+    name: 📦 Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create-release.outputs.result }}
+      version: ${{ steps.get-version.outputs.version }}
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🏷️ Get Version
+        id: get-version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 📝 Create Release Draft
+        id: create-release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: '${{ steps.get-version.outputs.version }}',
+              name: '🎬 Thai Video Downloader ${{ steps.get-version.outputs.version }}',
+              body: `## 🆕 What's New
+
+            ### ✨ New Features
+            - 📋 Clipboard auto-paste - ตรวจจับ URL อัตโนมัติ
+            - ⌨️ Keyboard shortcuts - Enter, Escape, Ctrl+O
+            - 🔔 Desktop notifications - แจ้งเตือนเมื่อดาวน์โหลดเสร็จ
+            - ⚡ Speed & ETA display - แสดงความเร็วและเวลาที่เหลือ
+
+            ### 🐛 Bug Fixes
+            - Fixed various UI issues
+            - Improved error handling
+
+            ### 📥 Downloads
+
+            | Platform | File |
+            |----------|------|
+            | 🪟 Windows | \`ThaiVideoDownloader_${{ steps.get-version.outputs.version }}_x64-setup.exe\` |
+            | 🍎 macOS (Intel) | \`ThaiVideoDownloader_${{ steps.get-version.outputs.version }}_x64.dmg\` |
+            | 🍎 macOS (Apple Silicon) | \`ThaiVideoDownloader_${{ steps.get-version.outputs.version }}_aarch64.dmg\` |
+            | 🐧 Linux (deb) | \`ThaiVideoDownloader_${{ steps.get-version.outputs.version }}_amd64.deb\` |
+            | 🐧 Linux (AppImage) | \`ThaiVideoDownloader_${{ steps.get-version.outputs.version }}_amd64.AppImage\` |
+
+            ---
+            **Full Changelog**: https://github.com/${{ github.repository }}/compare/...v${{ steps.get-version.outputs.version }}
+            `,
+              draft: true,
+              prerelease: false
+            })
+            return data.id
+
+  # 🪟 Build Windows
+  build-windows:
+    name: 🪟 Build Windows
+    needs: create-release
+    runs-on: windows-latest
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🦀 Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 📦 Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gui/src-tauri
+
+      - name: 📗 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: gui/package-lock.json
+
+      - name: 📦 Install Dependencies
+        working-directory: gui
+        run: npm ci
+
+      - name: 🔨 Build Tauri App
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: gui
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+
+  # 🍎 Build macOS (Intel)
+  build-macos-intel:
+    name: 🍎 Build macOS (Intel)
+    needs: create-release
+    runs-on: macos-13
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🦀 Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 📦 Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gui/src-tauri
+
+      - name: 📗 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: gui/package-lock.json
+
+      - name: 📦 Install Dependencies
+        working-directory: gui
+        run: npm ci
+
+      - name: 🔨 Build Tauri App
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: gui
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+
+  # 🍎 Build macOS (Apple Silicon)
+  build-macos-arm:
+    name: 🍎 Build macOS (Apple Silicon)
+    needs: create-release
+    runs-on: macos-14
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🦀 Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: 📦 Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gui/src-tauri
+
+      - name: 📗 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: gui/package-lock.json
+
+      - name: 📦 Install Dependencies
+        working-directory: gui
+        run: npm ci
+
+      - name: 🔨 Build Tauri App
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: gui
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          args: --target aarch64-apple-darwin
+
+  # 🐧 Build Linux
+  build-linux:
+    name: 🐧 Build Linux
+    needs: create-release
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐧 Install Linux Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev
+
+      - name: 🦀 Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 📦 Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gui/src-tauri
+
+      - name: 📗 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: gui/package-lock.json
+
+      - name: 📦 Install Dependencies
+        working-directory: gui
+        run: npm ci
+
+      - name: 🔨 Build Tauri App
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: gui
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+
+  # ✅ Publish Release
+  publish-release:
+    name: ✅ Publish Release
+    needs: [create-release, build-windows, build-macos-intel, build-macos-arm, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🎉 Publish Release
+        uses: actions/github-script@v7
+        env:
+          release_id: ${{ needs.create-release.outputs.release_id }}
+        with:
+          script: |
+            github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: process.env.release_id,
+              draft: false
+            })

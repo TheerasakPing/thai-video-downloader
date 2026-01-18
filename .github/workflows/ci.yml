@@ -1,0 +1,130 @@
+name: 🔄 CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # 🔍 Lint & Type Check
+  lint:
+    name: 🔍 Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 📗 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: gui/package-lock.json
+
+      - name: 📦 Install Dependencies
+        working-directory: gui
+        run: npm ci
+
+      - name: 📝 Type Check
+        working-directory: gui
+        run: npx tsc --noEmit
+
+  # 🦀 Rust Check
+  rust-check:
+    name: 🦀 Rust Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐧 Install Linux Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev
+
+      - name: 🦀 Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: 📦 Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gui/src-tauri
+
+      - name: 🔍 Clippy
+        working-directory: gui/src-tauri
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: 📐 Rustfmt
+        working-directory: gui/src-tauri
+        run: cargo fmt --all -- --check
+
+  # 🏗️ Build Test
+  build-test:
+    name: 🏗️ Build Test (${{ matrix.os }})
+    needs: [lint, rust-check]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: 🪟 Windows
+          - os: macos-14
+            label: 🍎 macOS
+          - os: ubuntu-22.04
+            label: 🐧 Linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐧 Install Linux Dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev
+
+      - name: 🦀 Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 📦 Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gui/src-tauri
+
+      - name: 📗 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: gui/package-lock.json
+
+      - name: 📦 Install Dependencies
+        working-directory: gui
+        run: npm ci
+
+      - name: 🔨 Build
+        working-directory: gui
+        run: npm run tauri build -- --debug
+
+      - name: ✅ Build Success
+        run: echo "✅ ${{ matrix.label }} build completed successfully!"
